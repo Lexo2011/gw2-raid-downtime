@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GW2 Raid Downtime</title>
+  <meta name="description" content="How much of your Guild Wars 2 raid was spent fighting, and how much idle." />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="wrap">
+    <header class="masthead">
+      <h1>Raid Downtime</h1>
+      <p class="lede">Pulls your logs from GW2 Wingman and shows how much of a raid was spent fighting and how much idle.</p>
+    </header>
+
+    <form id="form" class="panel" autocomplete="on">
+      <div class="grid">
+        <label class="field span-2">
+          <span>Account name</span>
+          <input id="account" name="account" required placeholder="Name.1234" pattern=".+\.\d{4}" title="Account name like Name.1234" />
+        </label>
+        <label class="field">
+          <span>Start</span>
+          <input id="start" name="start" type="datetime-local" step="60" />
+        </label>
+        <label class="field">
+          <span>End</span>
+          <input id="end" name="end" type="datetime-local" step="60" />
+        </label>
+      </div>
+
+      <div class="presets" aria-label="Quick ranges">
+        <button type="button" data-preset="3">Last 3 h</button>
+        <button type="button" data-preset="6">Last 6 h</button>
+        <button type="button" data-preset="24">Last 24 h</button>
+        <button type="button" data-preset="clear">Clear (auto)</button>
+      </div>
+      <p class="hint">Times are in your local time zone. Leave Start empty to begin at the first pull and End empty to stop at the last fight.</p>
+
+      <details class="advanced">
+        <summary>Extra source: dps.report</summary>
+        <label class="field">
+          <span>dps.report userToken (optional)</span>
+          <input id="token" name="token" type="password" autocomplete="off" placeholder="Adds logs you uploaded to dps.report but not to Wingman" />
+        </label>
+        <p class="hint">The token stays in your browser and goes only to dps.report. Only fights that include the account above are counted.</p>
+      </details>
+
+      <div class="actions">
+        <button id="go" type="submit" class="primary">Calculate</button>
+        <span id="status" class="status" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+
+    <section id="results" hidden>
+      <div id="warnings"></div>
+
+      <div class="cards">
+        <div class="card"><span class="k">Window</span><span class="v" id="c-window"></span><span class="s" id="c-range"></span></div>
+        <div class="card fight"><span class="k">Fighting</span><span class="v" id="c-fight"></span><span class="s" id="c-fightpct"></span></div>
+        <div class="card idle"><span class="k">Idle</span><span class="v" id="c-idle"></span><span class="s" id="c-idlepct"></span></div>
+        <div class="card"><span class="k">Pulls</span><span class="v" id="c-pulls"></span><span class="s" id="c-kf"></span></div>
+      </div>
+
+      <div class="panel">
+        <h2>Timeline</h2>
+        <div id="timeline" class="timeline" role="img"></div>
+        <div class="axis" id="axis"></div>
+        <div class="legend">
+          <span><i class="sw kill"></i>Kill</span>
+          <span><i class="sw fail"></i>Wipe</span>
+          <span><i class="sw gap"></i>Idle</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Where the idle time went</h2>
+        <dl class="breakdown" id="breakdown"></dl>
+      </div>
+
+      <div class="panel">
+        <h2>Fights</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Pull</th><th>Boss</th><th>Result</th><th class="num">Duration</th><th class="num">Idle before</th><th></th></tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <footer class="foot">
+      Data from <a href="https://gw2wingman.nevermindcreations.de" target="_blank" rel="noopener">GW2 Wingman</a>
+      and <a href="https://dps.report" target="_blank" rel="noopener">dps.report</a>. Wingman returns the latest 250 logs per account.
+    </footer>
+  </main>
+
+  <script src="downtime.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
