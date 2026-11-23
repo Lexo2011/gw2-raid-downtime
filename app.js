@@ -38,13 +38,25 @@
     statusEl.classList.toggle("error", !!isError);
   }
 
+  /** Fetch JSON; APIs put the reason in {"error": "..."} even on 4xx, so surface that. */
   async function getJson(url, signal) {
     const res = await fetch(url, { signal });
-    if (!res.ok) throw new Error(`${new URL(url).host} answered HTTP ${res.status}`);
-    const data = await res.json();
-    if (data && data.error) throw new Error(data.error);
+    let data = null;
+    try { data = await res.json(); } catch { /* non-JSON body */ }
+    if (data && data.error) {
+      const e = new Error(data.error);
+      e.status = res.status;
+      throw e;
+    }
+    if (!res.ok) {
+      const e = new Error(`${new URL(url).host} answered HTTP ${res.status}`);
+      e.status = res.status;
+      throw e;
+    }
     return data;
   }
+
+  const isNotFound = (e) => /no information found/i.test(e.message);
 
   // ---------- data sources ----------
   async function loadBossNames(signal) {
@@ -59,24 +71,62 @@
     return bossNames;
   }
 
-  async function fetchWingman(account, signal) {
+  async function fetchWingmanExact(account, signal) {
     const data = await getJson(`${WINGMAN}/api/playerStats?account=${encodeURIComponent(account)}`, signal);
     const logs = Array.isArray(data.latestLogs) ? data.latestLogs : [];
-    return { fights: logs.map(D.fromWingman).filter(Boolean), total: logs.length };
+    return { account: data.account || account, fights: logs.map(D.fromWingman).filter(Boolean), total: logs.length };
   }
 
+  /**
+   * Wingman account lookup is case-sensitive ("name.1234" fails where "Name.1234" works).
+   * Try the name as typed, then spellings we know from elsewhere, then a capitalised guess.
+   */
+  async function fetchWingman(account, knownSpellings, signal) {
+    const lower = account.toLowerCase();
+    const candidates = [account];
+    for (const s of knownSpellings) if (s.toLowerCase() === lower) candidates.push(s);
+    candidates.push(account.charAt(0).toUpperCase() + account.slice(1));
+    const tried = new Set();
+    for (const name of candidates) {
+      if (tried.has(name)) continue;
+      tried.add(name);
+      try {
+        return await fetchWingmanExact(name, signal);
+      } catch (e) {
+        if (!isNotFound(e)) throw e;
+      }
+    }
+    throw new Error(
+      `Wingman has no data for "${account}". Account names are case-sensitive there, so type it exactly as it appears in game (e.g. Name.1234). If it's right, your logs may not be on Wingman yet.`
+    );
+  }
+
+  /** Returns fights plus the exact account spelling dps.report knows (for the Wingman case fix). */
   async function fetchDpsReport(token, account, from, to, signal) {
     const params = new URLSearchParams({ userToken: token, perPage: "1000", page: "1" });
     if (isFinite(from)) params.set("sinceEncounter", String(Math.floor(from / 1000) - 3600));
     if (isFinite(to)) params.set("untilEncounter", String(Math.ceil(to / 1000)));
+    const want = account.toLowerCase();
     let lastErr;
     for (const host of DPS_REPORT_HOSTS) {
       try {
         const fights = [];
+        const spellings = new Set();
         for (let page = 1; page <= 10; page++) {
           params.set("page", String(page));
-          const data = await getJson(`${host}/getUploads?${params}`, signal);
+          let data;
+          try {
+            data = await getJson(`${host}/getUploads?${params}`, signal);
+          } catch (e) {
+            // dps.report answers 403 "userToken has no uploads" when nothing matches: that's an empty result.
+            if (/no uploads/i.test(e.message)) return { fights, spellings: [...spellings], empty: true };
+            throw e;
+          }
           for (const up of data.uploads || []) {
+            const players = up.players ? (Array.isArray(up.players) ? up.players : Object.values(up.players)) : [];
+            for (const p of players) {
+              if (String(p.display_name || "").toLowerCase() === want) spellings.add(p.display_name);
+            }
             if (D.dpsReportHasAccount(up, account)) {
               const f = D.fromDpsReport(up);
               if (f) fights.push(f);
@@ -84,10 +134,12 @@
           }
           if (!data.pages || page >= data.pages) break;
         }
-        return fights;
+        return { fights, spellings: [...spellings], empty: !fights.length };
       } catch (e) {
         if (e.name === "AbortError") throw e;
         lastErr = e;
+        // Only switch to the mirror for network / server trouble, not for answers like a bad token.
+        if (e.status && e.status < 500) break;
       }
     }
     throw lastErr;
@@ -129,24 +181,36 @@
 
     const warnings = [];
     try {
-      const [names, wing, dps] = await Promise.all([
-        loadBossNames(signal),
-        fetchWingman(account, signal).catch((e) => {
+      const namesP = loadBossNames(signal);
+      // dps.report first (small, fast): it also tells us the exact account spelling for Wingman.
+      let dps = { fights: [], spellings: [] };
+      if (token) {
+        setStatus("Fetching your dps.report uploads…");
+        try {
+          dps = await fetchDpsReport(token, account, startIn, endIn, signal);
+          if (dps.empty) warnings.push("dps.report: this userToken has no uploads with this account in that time range.");
+        } catch (e) {
           if (e.name === "AbortError") throw e;
-          warnings.push(`Wingman: ${e.message}`);
-          return { fights: [], total: 0 };
-        }),
-        token
-          ? fetchDpsReport(token, account, startIn, endIn, signal).catch((e) => {
-              if (e.name === "AbortError") throw e;
-              warnings.push(`dps.report: ${e.message}`);
-              return [];
-            })
-          : Promise.resolve([]),
-      ]);
+          warnings.push(`dps.report: ${e.message}`);
+        }
+      }
 
-      const all = wing.fights.concat(dps);
-      if (!all.length) throw new Error(warnings.join(" · ") || "No logs found for this account.");
+      setStatus("Fetching logs from Wingman… (a few MB, can take a moment)");
+      let wing = { fights: [], total: 0 };
+      try {
+        wing = await fetchWingman(account, dps.spellings, signal);
+        if (wing.account !== account) {
+          $("account").value = wing.account;
+          store.set("dt.account", wing.account);
+        }
+      } catch (e) {
+        if (e.name === "AbortError") throw e;
+        warnings.push(`Wingman: ${e.message}`);
+      }
+      const names = await namesP;
+
+      const all = wing.fights.concat(dps.fights);
+      if (!all.length) throw new Error(warnings.join(" ") || "No logs found for this account.");
 
       // Auto window: first pull / last fight end inside the requested bounds.
       const inBounds = all.filter(
