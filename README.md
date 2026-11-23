@@ -2,6 +2,8 @@
 
 Shows how much of a raid was spent fighting and how much was idle.
 
+**Live:** https://lexo2011.github.io/gw2-raid-downtime/
+
 ## Use
 
 Open `index.html` in a browser. You can double-click it, or serve the folder with `npx serve .`. Then enter:
